@@ -527,7 +527,7 @@
   }
 
   // ── Gun.js ──
-  let presenceTimer, peerCountTimer;
+  let presenceTimer;
 
   function initGun() {
     gun = Gun({
@@ -540,26 +540,30 @@
 
     roomRef = gun.get('buzz-chat-v1').get(roomCode);
 
-    // Announce presence
-    const announcePresence = () => {
+    // Announce presence + update peer count together
+    const heartbeat = () => {
       roomRef.get('presence').get(myId).put({
         name: myName,
         ts: Date.now(),
       });
+      updatePeerCount();
     };
-    announcePresence();
+    heartbeat();
 
-    // Heartbeat every 30s (longer interval to reduce traffic)
-    presenceTimer = setInterval(announcePresence, 30000);
+    // Heartbeat every 2 minutes — only when tab is visible
+    presenceTimer = setInterval(() => {
+      if (!document.hidden) heartbeat();
+    }, 120000);
 
     // Clean up on page close
     window.addEventListener('beforeunload', () => {
       roomRef.get('presence').get(myId).put(null);
     });
 
-    // Poll peer count on a fixed interval instead of reacting to every .on() event
-    updatePeerCount();
-    peerCountTimer = setInterval(updatePeerCount, 10000);
+    // Refresh when tab becomes visible again
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) heartbeat();
+    });
 
     // Post join message
     addSystemMessage(`You joined as ${myName}`);
@@ -576,18 +580,19 @@
       renderMessage(data, initialLoad);
     });
 
-    // Listen for typing — ignore stale entries
-    roomRef.get('typing').map().on((data, peerId) => {
-      if (!data || peerId === myId) return;
-      if (data.active && Date.now() - data.ts < 4000) {
-        showTyping(data.name || 'Someone');
-      }
-    });
-    // Clear typing indicator on a timer instead of on every stale event
+    // Poll for typing every 2s instead of using map().on() which
+    // generates continuous relay sync traffic for every stale entry
     setInterval(() => {
-      const el = document.getElementById('typingIndicator');
-      if (el.classList.contains('visible')) hideTyping();
-    }, 5000);
+      const now = Date.now();
+      let someoneTyping = false;
+      roomRef.get('typing').map().once((data, peerId) => {
+        if (data && peerId !== myId && data.active && now - data.ts < 4000) {
+          showTyping(data.name || 'Someone');
+          someoneTyping = true;
+        }
+      });
+      setTimeout(() => { if (!someoneTyping) hideTyping(); }, 200);
+    }, 2000);
 
     // Key bindings
     document.getElementById('msgInput').addEventListener('keydown', (e) => {
@@ -620,17 +625,17 @@
   const peers = new Map();
 
   function updatePeerCount() {
+    const staleMs = 180000; // 3 minutes
     const now = Date.now();
     roomRef.get('presence').map().once((data, peerId) => {
-      if (data && data.ts && now - data.ts < 60000) {
+      if (data && data.ts && now - data.ts < staleMs) {
         peers.set(peerId, data.ts);
       } else {
         peers.delete(peerId);
       }
     });
     setTimeout(() => {
-      // Prune stale entries
-      const cutoff = Date.now() - 60000;
+      const cutoff = Date.now() - staleMs;
       for (const [id, ts] of peers) {
         if (ts < cutoff) peers.delete(id);
       }
