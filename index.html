@@ -529,8 +529,10 @@
   }
 
   // Auto-rejoin if returning user has a room in URL
+  // Deferred to ensure all script declarations are fully loaded
+  // before Gun initializes and fires synchronous callbacks
   if (savedId && savedName && params.get('room')) {
-    joinRoom();
+    setTimeout(() => joinRoom(), 0);
   } else {
     document.getElementById('nameInput').focus();
   }
