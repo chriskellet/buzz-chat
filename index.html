@@ -559,11 +559,14 @@
     // Post join message
     addSystemMessage(`You joined as ${myName}`);
 
-    // Listen for messages
+    // Listen for messages — auto-scroll during initial load
+    let initialLoad = true;
+    setTimeout(() => { initialLoad = false; }, 2000);
+
     roomRef.get('messages').map().on((data, id) => {
       if (!data || !data.text || seenIds.has(id)) return;
       seenIds.add(id);
-      renderMessage(data);
+      renderMessage(data, initialLoad);
     });
 
     // Listen for typing
@@ -633,7 +636,7 @@
     input.focus();
   }
 
-  function renderMessage(data) {
+  function renderMessage(data, forceScroll) {
     const container = document.getElementById('messagesInner');
     const isMine = data.authorId === myId;
 
@@ -657,10 +660,10 @@
     msg.appendChild(time);
     container.appendChild(msg);
 
-    // Auto-scroll if near bottom
+    // Auto-scroll if near bottom or during initial load
     const scroller = document.getElementById('messages');
     const isNearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
-    if (isNearBottom || isMine) {
+    if (isNearBottom || isMine || forceScroll) {
       scroller.scrollTop = scroller.scrollHeight;
     }
   }
