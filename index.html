@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
 <title>Buzz · Instant Chat</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
@@ -32,13 +32,14 @@
     src: url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
   }
 
-  html { height: 100%; }
+  html { height: 100%; height: 100dvh; }
 
   body {
     font-family: var(--font);
     background: var(--bg);
     color: var(--text);
     height: 100%;
+    height: 100dvh;
     overflow: hidden;
   }
 
@@ -49,6 +50,8 @@
     align-items: center;
     justify-content: center;
     height: 100%;
+    height: 100dvh;
+    overflow-y: auto;
     gap: 2rem;
     padding: 2rem;
     animation: fadeIn 0.5s ease;
@@ -158,6 +161,7 @@
     display: none;
     flex-direction: column;
     height: 100%;
+    height: 100dvh;
   }
   #chat.active { display: flex; }
   #lobby.hidden { display: none; }
@@ -518,8 +522,8 @@
   function initGun() {
     gun = Gun({
       peers: [
-        'https://gun-manhattan.herokuapp.com/gun',
-        'https://gun-us.herokuapp.com/gun',
+        'https://relay.peer.ooo/gun',
+        'https://gun.o8.is/gun',
       ],
       localStorage: false,
     });
@@ -693,6 +697,18 @@
   document.getElementById('nameInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') document.getElementById('roomInput').focus();
   });
+
+  // iOS keyboard viewport fix
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      document.documentElement.style.height = window.visualViewport.height + 'px';
+      // Scroll input into view when keyboard opens
+      const active = document.activeElement;
+      if (active && active.tagName === 'INPUT') {
+        requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest' }));
+      }
+    });
+  }
 </script>
 </body>
 </html>
