@@ -669,12 +669,16 @@
       }
     });
 
-    // Scroll-to-top detection for loading older messages
+    // Scroll-to-top detection for loading older messages (debounced)
+    let scrollLoadTimer;
     document.getElementById('messages').addEventListener('scroll', () => {
-      const scroller = document.getElementById('messages');
-      if (scroller.scrollTop < 50 && historyOffset < messageHistory.length) {
-        loadOlderMessages();
-      }
+      clearTimeout(scrollLoadTimer);
+      scrollLoadTimer = setTimeout(() => {
+        const scroller = document.getElementById('messages');
+        if (scroller.scrollTop < 50 && historyOffset < messageHistory.length) {
+          loadOlderMessages();
+        }
+      }, 200);
     });
 
     // Poll for typing every 2s instead of using map().on() which

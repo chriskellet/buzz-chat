@@ -219,8 +219,9 @@ test('load-more button reveals older messages', async ({ page }) => {
   });
 
   // Wait for load-more to appear, then click it
-  await expect(page.locator('.load-more')).toBeVisible({ timeout: 3000 });
-  await page.click('.load-more');
+  const loadMoreBtn = page.locator('.load-more');
+  await expect(loadMoreBtn).toBeVisible({ timeout: 3000 });
+  await loadMoreBtn.click();
 
   // All 70 should be visible
   const bubbles = page.locator('.msg.theirs .msg-bubble');
