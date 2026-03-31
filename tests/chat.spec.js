@@ -264,6 +264,32 @@ test('returning user with room URL auto-joins without lobby', async ({ page }) =
 });
 
 // ─────────────────────────────────────────────
+// Test: Auto-rejoin fully works (send via button + Enter)
+//
+// This covers the real user flow: returning user
+// auto-joins and can actually send messages.
+// ─────────────────────────────────────────────
+test('auto-rejoin user can send messages via button and Enter key', async ({ page }) => {
+  await page.goto('/');
+  const room = `rejoin-send-${Date.now()}`;
+  await joinRoom(page, 'RejoinUser', room);
+
+  // Navigate to room URL — triggers auto-rejoin
+  await page.goto(`/?room=${room}`);
+  await expect(page.locator('#chat')).toHaveClass(/active/, { timeout: 5000 });
+
+  // Test send via button click
+  await page.fill('#msgInput', 'Button send');
+  await page.click('.send-btn');
+  await expect(page.locator('.msg-bubble', { hasText: 'Button send' })).toBeVisible({ timeout: 5000 });
+
+  // Test send via Enter key
+  await page.fill('#msgInput', 'Enter send');
+  await page.press('#msgInput', 'Enter');
+  await expect(page.locator('.msg-bubble', { hasText: 'Enter send' })).toBeVisible({ timeout: 5000 });
+});
+
+// ─────────────────────────────────────────────
 // Test: Name pre-fill from cookie
 // ─────────────────────────────────────────────
 test('name input is pre-filled from cookie on fresh visit', async ({ page }) => {
