@@ -496,10 +496,10 @@
 
 <script>
   // ── State ──
-  let gun, roomRef, myName, myId, roomCode, seenIds = new Set(), typingTimeout;
-  const PAGE_SIZE = 50;
-  let messageHistory = [];  // full sorted backlog
-  let historyOffset = 0;    // how many from the end we've rendered
+  var gun, roomRef, myName, myId, roomCode, seenIds = new Set(), typingTimeout;
+  var PAGE_SIZE = 50;
+  var messageHistory = [];  // full sorted backlog
+  var historyOffset = 0;    // how many from the end we've rendered
 
   // ── Cookie helpers ──
   function setCookie(name, value, days) {
@@ -588,7 +588,7 @@
         'https://relay.peer.ooo/gun',
         'https://gun.o8.is/gun',
       ],
-      localStorage: false,
+      localStorage: true,
     });
 
     roomRef = gun.get('buzz-chat-v1').get(roomCode);
@@ -621,29 +621,19 @@
     // Post join message
     addSystemMessage(`You joined as ${myName}`);
 
-    // Listen for messages — buffer during initial load, then sort and paginate
+    // Listen for messages — buffer during initial load, debounce then sort & paginate
     let initialLoad = true;
     const initialBuffer = [];
+    let flushTimer = null;
+    const DEBOUNCE_MS = 400;  // flush 400ms after last message arrives
+    const MAX_WAIT_MS = 2000; // but never wait longer than 2s total
+    const loadStart = Date.now();
 
-    roomRef.get('messages').map().on((data, id) => {
-      if (!data || !data.text) return;
-      if (pendingMsgs.has(id)) { confirmMessage(id, data); return; }
-      if (seenIds.has(id)) return;
-      seenIds.add(id);
-
-      if (initialLoad) {
-        initialBuffer.push(data);
-      } else {
-        // Live message — also add to history for consistency
-        messageHistory.push(data);
-        historyOffset++;
-        renderMessage(data, false);
-      }
-    });
-
-    // After initial load window, sort and render last PAGE_SIZE messages
-    setTimeout(() => {
+    function flushInitialBuffer() {
+      if (!initialLoad) return;
       initialLoad = false;
+      clearTimeout(flushTimer);
+
       initialBuffer.sort((a, b) => a.ts - b.ts);
       messageHistory = initialBuffer;
 
@@ -655,14 +645,40 @@
       for (let i = start; i < messageHistory.length; i++) {
         renderMessage(messageHistory[i], true);
       }
-    }, 2000);
+    }
 
-    // Scroll-to-top detection for loading older messages
-    document.getElementById('messages').addEventListener('scroll', () => {
-      const scroller = document.getElementById('messages');
-      if (scroller.scrollTop < 50 && historyOffset < messageHistory.length) {
-        loadOlderMessages();
+    // Hard deadline — never wait longer than MAX_WAIT_MS
+    setTimeout(flushInitialBuffer, MAX_WAIT_MS);
+
+    roomRef.get('messages').map().on((data, id) => {
+      if (!data || !data.text) return;
+      if (pendingMsgs.has(id)) { confirmMessage(id, data); return; }
+      if (seenIds.has(id)) return;
+      seenIds.add(id);
+
+      if (initialLoad) {
+        initialBuffer.push(data);
+        // Debounce: flush shortly after messages stop arriving
+        clearTimeout(flushTimer);
+        flushTimer = setTimeout(flushInitialBuffer, DEBOUNCE_MS);
+      } else {
+        // Live message — also add to history for consistency
+        messageHistory.push(data);
+        historyOffset++;
+        renderMessage(data, false);
       }
+    });
+
+    // Scroll-to-top detection for loading older messages (debounced)
+    let scrollLoadTimer;
+    document.getElementById('messages').addEventListener('scroll', () => {
+      clearTimeout(scrollLoadTimer);
+      scrollLoadTimer = setTimeout(() => {
+        const scroller = document.getElementById('messages');
+        if (scroller.scrollTop < 50 && historyOffset < messageHistory.length) {
+          loadOlderMessages();
+        }
+      }, 200);
     });
 
     // Poll for typing every 2s instead of using map().on() which
