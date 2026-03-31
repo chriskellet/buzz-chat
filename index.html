@@ -296,6 +296,8 @@
     padding: 0 0.4rem;
   }
   .msg.mine .msg-time { text-align: right; }
+  .msg-status { color: var(--text-dim); font-style: italic; }
+  .msg.sending .msg-bubble { opacity: 0.6; }
 
   .msg-system {
     align-self: center;
@@ -564,7 +566,9 @@
     setTimeout(() => { initialLoad = false; }, 2000);
 
     roomRef.get('messages').map().on((data, id) => {
-      if (!data || !data.text || seenIds.has(id)) return;
+      if (!data || !data.text) return;
+      if (pendingMsgs.has(id)) { confirmMessage(id, data); return; }
+      if (seenIds.has(id)) return;
       seenIds.add(id);
       renderMessage(data, initialLoad);
     });
@@ -616,18 +620,26 @@
   }
 
   // ── Messaging ──
+  const pendingMsgs = new Map();
+
   function sendMessage() {
     const input = document.getElementById('msgInput');
     const text = input.value.trim();
     if (!text) return;
 
     const msgId = `${myId}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+    const ts = Date.now();
+
+    // Show optimistic message immediately
+    const el = renderMessage({ text, author: myName, authorId: myId, ts }, false, true);
+    pendingMsgs.set(msgId, el);
+    seenIds.add(msgId);
 
     roomRef.get('messages').get(msgId).put({
       text,
       author: myName,
       authorId: myId,
-      ts: Date.now(),
+      ts,
     });
 
     // Clear typing
@@ -636,12 +648,12 @@
     input.focus();
   }
 
-  function renderMessage(data, forceScroll) {
+  function renderMessage(data, forceScroll, pending) {
     const container = document.getElementById('messagesInner');
     const isMine = data.authorId === myId;
 
     const msg = document.createElement('div');
-    msg.className = `msg ${isMine ? 'mine' : 'theirs'}`;
+    msg.className = `msg ${isMine ? 'mine' : 'theirs'}${pending ? ' sending' : ''}`;
 
     const author = document.createElement('div');
     author.className = 'msg-author';
@@ -653,7 +665,10 @@
 
     const time = document.createElement('div');
     time.className = 'msg-time';
-    time.textContent = new Date(data.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    time.textContent = pending
+      ? '<span class="msg-status">Sending\u2026</span>'
+      : new Date(data.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (pending) time.innerHTML = time.textContent;
 
     msg.appendChild(author);
     msg.appendChild(bubble);
@@ -666,6 +681,17 @@
     if (isNearBottom || isMine || forceScroll) {
       scroller.scrollTop = scroller.scrollHeight;
     }
+
+    return msg;
+  }
+
+  function confirmMessage(msgId, data) {
+    const el = pendingMsgs.get(msgId);
+    if (!el) return;
+    el.classList.remove('sending');
+    const time = el.querySelector('.msg-time');
+    time.textContent = new Date(data.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    pendingMsgs.delete(msgId);
   }
 
   function addSystemMessage(text) {
