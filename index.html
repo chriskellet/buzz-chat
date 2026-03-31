@@ -631,16 +631,15 @@
     const ts = Date.now();
 
     // Show optimistic message immediately
-    const el = renderMessage({ text, author: myName, authorId: myId, ts }, false, true);
+    const msgData = { text, author: myName, authorId: myId, ts };
+    const el = renderMessage(msgData, false, true);
     pendingMsgs.set(msgId, el);
     seenIds.add(msgId);
 
-    roomRef.get('messages').get(msgId).put({
-      text,
-      author: myName,
-      authorId: myId,
-      ts,
-    });
+    // Auto-confirm after 3s if relay is slow/down
+    setTimeout(() => confirmMessage(msgId, msgData), 3000);
+
+    roomRef.get('messages').get(msgId).put(msgData);
 
     // Clear typing
     roomRef.get('typing').get(myId).put({ active: false, ts: Date.now() });
@@ -665,10 +664,14 @@
 
     const time = document.createElement('div');
     time.className = 'msg-time';
-    time.textContent = pending
-      ? '<span class="msg-status">Sending\u2026</span>'
-      : new Date(data.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    if (pending) time.innerHTML = time.textContent;
+    if (pending) {
+      const status = document.createElement('span');
+      status.className = 'msg-status';
+      status.textContent = 'Sending\u2026';
+      time.appendChild(status);
+    } else {
+      time.textContent = new Date(data.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
 
     msg.appendChild(author);
     msg.appendChild(bubble);
