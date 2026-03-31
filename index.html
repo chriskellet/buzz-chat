@@ -473,14 +473,36 @@
   // ── State ──
   let gun, roomRef, myName, myId, roomCode, seenIds = new Set(), typingTimeout;
 
+  // ── Cookie helpers ──
+  function setCookie(name, value, days) {
+    const d = new Date();
+    d.setTime(d.getTime() + days * 86400000);
+    document.cookie = `${name}=${encodeURIComponent(value)};expires=${d.toUTCString()};path=/;SameSite=Lax`;
+  }
+  function getCookie(name) {
+    const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  // ── Restore returning user ──
+  const savedId = getCookie('buzz_user_id');
+  const savedName = getCookie('buzz_user_name');
+  if (savedName) {
+    document.getElementById('nameInput').value = savedName;
+  }
+
   // ── Init ──
   const params = new URLSearchParams(location.search);
   if (params.get('room')) {
     document.getElementById('roomInput').value = params.get('room');
   }
 
-  // Auto-focus
-  document.getElementById('nameInput').focus();
+  // Auto-rejoin if returning user has a room in URL
+  if (savedId && savedName && params.get('room')) {
+    joinRoom();
+  } else {
+    document.getElementById('nameInput').focus();
+  }
 
   // ── Room helpers ──
   function generateRoom() {
@@ -503,7 +525,10 @@
       roomCode = document.getElementById('roomInput').value.trim();
     }
 
-    myId = crypto.randomUUID();
+    // Reuse saved identity or create new one
+    myId = savedId || crypto.randomUUID();
+    setCookie('buzz_user_id', myId, 365);
+    setCookie('buzz_user_name', myName, 365);
 
     // Update URL without reload
     const url = new URL(location.href);
@@ -568,17 +593,29 @@
     // Post join message
     addSystemMessage(`You joined as ${myName}`);
 
-    // Listen for messages — auto-scroll during initial load
+    // Listen for messages — buffer during initial load, then sort and render
     let initialLoad = true;
-    setTimeout(() => { initialLoad = false; }, 2000);
+    const initialBuffer = [];
 
     roomRef.get('messages').map().on((data, id) => {
       if (!data || !data.text) return;
       if (pendingMsgs.has(id)) { confirmMessage(id, data); return; }
       if (seenIds.has(id)) return;
       seenIds.add(id);
-      renderMessage(data, initialLoad);
+
+      if (initialLoad) {
+        initialBuffer.push(data);
+      } else {
+        renderMessage(data, false);
+      }
     });
+
+    // After initial load window, sort buffered messages by timestamp and render
+    setTimeout(() => {
+      initialLoad = false;
+      initialBuffer.sort((a, b) => a.ts - b.ts);
+      initialBuffer.forEach(msg => renderMessage(msg, true));
+    }, 2000);
 
     // Poll for typing every 2s instead of using map().on() which
     // generates continuous relay sync traffic for every stale entry
