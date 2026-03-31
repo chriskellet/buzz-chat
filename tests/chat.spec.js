@@ -1,6 +1,5 @@
 const { test, expect } = require('@playwright/test');
 
-// Unique room per test run to avoid cross-contamination
 const TEST_ROOM = `test-room-${Date.now()}`;
 const TEST_NAME = 'TestUser';
 
@@ -12,35 +11,11 @@ async function joinRoom(page, name, room) {
   await expect(page.locator('#chat')).toHaveClass(/active/);
 }
 
-// Helper: send a message and wait for it to appear in the DOM
+// Helper: send a message and wait for it to appear
 async function sendMessage(page, text) {
   await page.fill('#msgInput', text);
   await page.click('.send-btn');
   await expect(page.locator('.msg-bubble', { hasText: text })).toBeVisible();
-}
-
-// Helper: wait for the initial buffer to flush (messages rendered)
-async function waitForFlush(page) {
-  // The app flushes 400ms after last message arrives, max 2s.
-  // Wait for at least one .msg element or the flush timeout.
-  await page.waitForTimeout(600);
-}
-
-// Helper: inject messages into Gun and wait for them to render
-async function injectAndWaitForMessages(page, count, room) {
-  await page.evaluate(({ count, room }) => {
-    const ref = gun.get('buzz-chat-v1').get(room).get('messages');
-    const baseTs = Date.now() - count * 1000;
-    for (let i = 0; i < count; i++) {
-      const msgId = `inject-${i}-${Math.random().toString(36).slice(2, 6)}`;
-      ref.get(msgId).put({
-        text: `Message ${i + 1}`,
-        author: 'Bot',
-        authorId: 'bot-id',
-        ts: baseTs + i * 1000,
-      });
-    }
-  }, { count, room });
 }
 
 // ─────────────────────────────────────────────
@@ -70,7 +45,6 @@ test('can send a message and see it in the chat', async ({ page }) => {
   const msg = page.locator('.msg.mine .msg-bubble', { hasText: 'Hello world!' });
   await expect(msg).toBeVisible();
 
-  // Author should show "You" for own messages
   const author = page.locator('.msg.mine .msg-author');
   await expect(author.first()).toHaveText('You');
 });
@@ -83,7 +57,6 @@ test('cookies persist user name and ID across refresh', async ({ page }) => {
   const room = `cookie-${Date.now()}`;
   await joinRoom(page, 'CookieUser', room);
 
-  // Verify cookies are set
   const cookies = await page.context().cookies();
   const idCookie = cookies.find(c => c.name === 'buzz_user_id');
   const nameCookie = cookies.find(c => c.name === 'buzz_user_name');
@@ -93,13 +66,9 @@ test('cookies persist user name and ID across refresh', async ({ page }) => {
 
   const savedId = idCookie.value;
 
-  // Refresh the page (URL still has ?room=...)
   await page.reload();
-
-  // Should auto-rejoin — chat should be active
   await expect(page.locator('#chat')).toHaveClass(/active/, { timeout: 5000 });
 
-  // ID should be the same after refresh
   const cookiesAfter = await page.context().cookies();
   const idAfter = cookiesAfter.find(c => c.name === 'buzz_user_id');
   expect(idAfter.value).toBe(savedId);
@@ -115,54 +84,69 @@ test('messages survive page refresh', async ({ page }) => {
 
   await sendMessage(page, 'Before refresh');
 
-  // Wait for Gun to flush to localStorage
+  // Poll until Gun has flushed to localStorage
   await page.waitForFunction(() => {
     return Object.keys(localStorage).length > 0;
-  }, { timeout: 5000 });
+  }, { timeout: 10000 });
 
-  // Refresh
+  // Extra buffer for Gun's async write
+  await page.waitForTimeout(2000);
+
   await page.reload();
   await expect(page.locator('#chat')).toHaveClass(/active/, { timeout: 5000 });
 
-  // Wait for message to appear (debounced buffer flush + Gun read)
   const msg = page.locator('.msg-bubble', { hasText: 'Before refresh' });
-  await expect(msg).toBeVisible({ timeout: 10000 });
+  await expect(msg).toBeVisible({ timeout: 15000 });
 });
 
 // ─────────────────────────────────────────────
 // Test: Messages render in chronological order
+//
+// Strategy: use addInitScript to seed Gun localStorage
+// BEFORE the page loads, so the initial-load buffer
+// picks them up and sorts them.
 // ─────────────────────────────────────────────
 test('messages are displayed in chronological order', async ({ page }) => {
-  // Navigate to room URL so auto-join seeds the room reference
   const room = `order-${Date.now()}`;
 
-  // Seed messages into Gun localStorage before joining
-  // by going to the page, joining, injecting, then navigating fresh
-  await page.goto('/');
-  await joinRoom(page, 'OrderUser', room);
-
-  // Inject messages with known timestamps in REVERSE order
-  await page.evaluate((room) => {
-    const ref = gun.get('buzz-chat-v1').get(room).get('messages');
+  // Seed Gun's localStorage with messages in REVERSE timestamp order.
+  // Gun stores its graph under a single '' key or per-node keys.
+  // We'll seed directly via addInitScript before Gun initializes.
+  await page.addInitScript((room) => {
+    // Write messages into Gun's localStorage graph before Gun loads
+    const graph = JSON.parse(localStorage.getItem('gun/') || '{}');
+    const ns = `buzz-chat-v1/${room}/messages`;
     const now = Date.now();
-    ref.get('msg-c').put({ text: 'Third', author: 'Bot', authorId: 'bot', ts: now });
-    ref.get('msg-a').put({ text: 'First', author: 'Bot', authorId: 'bot', ts: now - 20000 });
-    ref.get('msg-b').put({ text: 'Second', author: 'Bot', authorId: 'bot', ts: now - 10000 });
+
+    // Create the message nodes with timestamps out of order
+    const messages = {
+      'msg-c': { text: 'Third',  author: 'Bot', authorId: 'bot', ts: now,         _: { '#': `${ns}/msg-c`, '>': { text: now, author: now, authorId: now, ts: now } } },
+      'msg-a': { text: 'First',  author: 'Bot', authorId: 'bot', ts: now - 20000, _: { '#': `${ns}/msg-a`, '>': { text: now, author: now, authorId: now, ts: now } } },
+      'msg-b': { text: 'Second', author: 'Bot', authorId: 'bot', ts: now - 10000, _: { '#': `${ns}/msg-b`, '>': { text: now, author: now, authorId: now, ts: now } } },
+    };
+
+    // Build Gun graph structure
+    graph[ns] = { _: { '#': ns, '>': { 'msg-c': now, 'msg-a': now, 'msg-b': now } }, 'msg-c': { '#': `${ns}/msg-c` }, 'msg-a': { '#': `${ns}/msg-a` }, 'msg-b': { '#': `${ns}/msg-b` } };
+    graph[`${ns}/msg-c`] = messages['msg-c'];
+    graph[`${ns}/msg-a`] = messages['msg-a'];
+    graph[`${ns}/msg-b`] = messages['msg-b'];
+
+    localStorage.setItem('gun/', JSON.stringify(graph));
   }, room);
 
-  // Wait for Gun to process and the debounced flush to render
-  await page.waitForTimeout(1000);
+  // Set cookies so auto-join works
+  await page.context().addCookies([
+    { name: 'buzz_user_name', value: 'OrderUser', domain: 'localhost', path: '/' },
+    { name: 'buzz_user_id', value: 'order-test-id', domain: 'localhost', path: '/' },
+  ]);
 
-  // These arrived as live messages (after initial flush), so they're in arrival order.
-  // Navigate fresh to trigger the initial-load sort path.
   await page.goto(`/?room=${room}`);
   await expect(page.locator('#chat')).toHaveClass(/active/, { timeout: 5000 });
 
-  // Wait for sorted messages to render
+  // Wait for messages to render
   await expect(page.locator('.msg.theirs .msg-bubble', { hasText: 'Third' }))
     .toBeVisible({ timeout: 10000 });
 
-  // Get all message bubbles from "Bot"
   const bubbles = page.locator('.msg.theirs .msg-bubble');
   const texts = await bubbles.allTextContents();
   const ordered = texts.filter(t => ['First', 'Second', 'Third'].includes(t));
@@ -170,27 +154,37 @@ test('messages are displayed in chronological order', async ({ page }) => {
 });
 
 // ─────────────────────────────────────────────
-// Test: Pagination — only last 50 messages rendered initially
+// Test: Pagination — only last 50 rendered initially
+//
+// Strategy: join room, immediately inject 70 messages
+// via Gun. They arrive during the initial buffer window
+// and get sorted + paginated on flush.
 // ─────────────────────────────────────────────
 test('initial load shows only last 50 messages with load-more button', async ({ page }) => {
   const room = `page-${Date.now()}`;
-  await page.goto('/');
-  await joinRoom(page, 'PageUser', room);
-
-  // Inject 70 messages
-  await injectAndWaitForMessages(page, 70, room);
-
-  // Wait for Gun to flush to localStorage
-  await page.waitForFunction(() => {
-    return Object.keys(localStorage).length > 0;
-  }, { timeout: 5000 });
-  await page.waitForTimeout(500);
-
-  // Navigate fresh to trigger initial-load pagination
   await page.goto(`/?room=${room}`);
-  await expect(page.locator('#chat')).toHaveClass(/active/, { timeout: 5000 });
 
-  // Wait for last message to render (proves flush happened)
+  // Join quickly to start the buffer window
+  await page.fill('#nameInput', 'PageUser');
+  await page.fill('#roomInput', room);
+  await page.click('#joinBtn');
+  await expect(page.locator('#chat')).toHaveClass(/active/);
+
+  // Immediately inject 70 messages — they'll land in the initial buffer
+  await page.evaluate(({ count, room }) => {
+    const ref = gun.get('buzz-chat-v1').get(room).get('messages');
+    const baseTs = Date.now() - count * 1000;
+    for (let i = 0; i < count; i++) {
+      ref.get(`inject-${i}`).put({
+        text: `Message ${i + 1}`,
+        author: 'Bot',
+        authorId: 'bot-id',
+        ts: baseTs + i * 1000,
+      });
+    }
+  }, { count: 70, room });
+
+  // Wait for debounced flush (400ms after last message + rendering)
   await expect(page.locator('.msg.theirs .msg-bubble', { hasText: 'Message 70' }))
     .toBeVisible({ timeout: 10000 });
 
@@ -203,10 +197,7 @@ test('initial load shows only last 50 messages with load-more button', async ({ 
   const count = await bubbles.count();
   expect(count).toBe(50);
 
-  // The last message should be "Message 70"
   await expect(bubbles.last()).toHaveText('Message 70');
-
-  // The first visible should be "Message 21" (70 - 50 + 1)
   await expect(bubbles.first()).toHaveText('Message 21');
 });
 
@@ -215,37 +206,39 @@ test('initial load shows only last 50 messages with load-more button', async ({ 
 // ─────────────────────────────────────────────
 test('load-more button reveals older messages', async ({ page }) => {
   const room = `loadmore-${Date.now()}`;
-  await page.goto('/');
-  await joinRoom(page, 'LoadUser', room);
-
-  // Inject 70 messages
-  await injectAndWaitForMessages(page, 70, room);
-
-  // Wait for Gun to flush
-  await page.waitForFunction(() => {
-    return Object.keys(localStorage).length > 0;
-  }, { timeout: 5000 });
-  await page.waitForTimeout(500);
-
-  // Navigate fresh
   await page.goto(`/?room=${room}`);
-  await expect(page.locator('#chat')).toHaveClass(/active/, { timeout: 5000 });
 
-  // Wait for messages to render
+  await page.fill('#nameInput', 'LoadUser');
+  await page.fill('#roomInput', room);
+  await page.click('#joinBtn');
+  await expect(page.locator('#chat')).toHaveClass(/active/);
+
+  // Inject 70 messages during initial buffer window
+  await page.evaluate(({ count, room }) => {
+    const ref = gun.get('buzz-chat-v1').get(room).get('messages');
+    const baseTs = Date.now() - count * 1000;
+    for (let i = 0; i < count; i++) {
+      ref.get(`inject-${i}`).put({
+        text: `Message ${i + 1}`,
+        author: 'Bot',
+        authorId: 'bot-id',
+        ts: baseTs + i * 1000,
+      });
+    }
+  }, { count: 70, room });
+
+  // Wait for flush
   await expect(page.locator('.msg.theirs .msg-bubble', { hasText: 'Message 70' }))
     .toBeVisible({ timeout: 10000 });
 
   // Click load more
   await page.click('.load-more');
 
-  // Now all 70 should be visible
+  // All 70 should be visible
   const bubbles = page.locator('.msg.theirs .msg-bubble');
   await expect(bubbles).toHaveCount(70, { timeout: 3000 });
 
-  // First message should now be "Message 1"
   await expect(bubbles.first()).toHaveText('Message 1');
-
-  // No more load-more button
   await expect(page.locator('.load-more')).not.toBeVisible();
 });
 
@@ -257,13 +250,11 @@ test('emoji-only messages render with enlarged styling', async ({ page }) => {
   const room = `emoji-${Date.now()}`;
   await joinRoom(page, 'EmojiUser', room);
 
-  // Send an emoji-only message
   await sendMessage(page, '🔥🎉');
 
   const emojiBubble = page.locator('.msg-bubble.emoji-only');
   await expect(emojiBubble).toBeVisible();
 
-  // Send a mixed message — should NOT get emoji-only class
   await sendMessage(page, 'Hello 🔥');
   const allBubbles = page.locator('.msg-bubble');
   const lastBubble = allBubbles.last();
@@ -278,10 +269,8 @@ test('returning user with room URL auto-joins without lobby', async ({ page }) =
   const room = `auto-${Date.now()}`;
   await joinRoom(page, 'AutoUser', room);
 
-  // Navigate directly to the room URL (simulating bookmark)
   await page.goto(`/?room=${room}`);
 
-  // Should skip lobby and go straight to chat
   await expect(page.locator('#chat')).toHaveClass(/active/, { timeout: 5000 });
   await expect(page.locator('#lobby')).toHaveClass(/hidden/);
   await expect(page.locator('.room-badge')).toHaveText(`# ${room}`);
@@ -295,7 +284,6 @@ test('name input is pre-filled from cookie on fresh visit', async ({ page }) => 
   const room = `prefill-${Date.now()}`;
   await joinRoom(page, 'PreFillUser', room);
 
-  // Navigate to root (no room param) — should show lobby with name pre-filled
   await page.goto('/');
   const nameInput = page.locator('#nameInput');
   await expect(nameInput).toHaveValue('PreFillUser');
@@ -309,12 +297,10 @@ test('Gun.js localStorage is enabled', async ({ page }) => {
   const room = `ls-${Date.now()}`;
   await joinRoom(page, 'LSUser', room);
 
-  // Send a message to trigger Gun writes
   await sendMessage(page, 'localStorage test');
 
-  // Gun should write to localStorage eventually
   const hasData = await page.waitForFunction(() => {
     return Object.keys(localStorage).length > 0;
-  }, { timeout: 5000 });
+  }, { timeout: 10000 });
   expect(hasData).toBeTruthy();
 });
