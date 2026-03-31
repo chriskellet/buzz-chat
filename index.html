@@ -496,7 +496,7 @@
 
 <script>
   // ── State ──
-  let gun, roomRef, myName, myId, roomCode, seenIds = new Set(), typingTimeout;
+  var gun, roomRef, myName, myId, roomCode, seenIds = new Set(), typingTimeout;
   const PAGE_SIZE = 50;
   let messageHistory = [];  // full sorted backlog
   let historyOffset = 0;    // how many from the end we've rendered
