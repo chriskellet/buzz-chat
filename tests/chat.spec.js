@@ -97,7 +97,8 @@ test('messages are written to Gun localStorage', async ({ page }) => {
   // Verify the message text exists somewhere in localStorage
   const hasMessage = await page.evaluate(() => {
     for (const key of Object.keys(localStorage)) {
-      if (localStorage.getItem(key).includes('Persistence test')) return true;
+      const val = localStorage.getItem(key);
+      if (val && val.includes('Persistence test')) return true;
     }
     return false;
   });
