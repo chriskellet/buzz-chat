@@ -237,16 +237,17 @@
   .messages {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
     scroll-behavior: smooth;
     overscroll-behavior: contain;
   }
-  .messages::before {
-    content: '';
-    flex: 1;
+
+  .messages-inner {
+    min-height: 100%;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 0.25rem;
   }
 
   .msg {
@@ -447,7 +448,7 @@
     </div>
   </div>
 
-  <div class="messages" id="messages"></div>
+  <div class="messages" id="messages"><div class="messages-inner" id="messagesInner"></div></div>
 
   <div class="typing-indicator" id="typingIndicator">
     <div class="typing-dots"><span></span><span></span><span></span></div>
@@ -633,7 +634,7 @@
   }
 
   function renderMessage(data) {
-    const container = document.getElementById('messages');
+    const container = document.getElementById('messagesInner');
     const isMine = data.authorId === myId;
 
     const msg = document.createElement('div');
@@ -657,14 +658,15 @@
     container.appendChild(msg);
 
     // Auto-scroll if near bottom
-    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+    const scroller = document.getElementById('messages');
+    const isNearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
     if (isNearBottom || isMine) {
-      container.scrollTop = container.scrollHeight;
+      scroller.scrollTop = scroller.scrollHeight;
     }
   }
 
   function addSystemMessage(text) {
-    const container = document.getElementById('messages');
+    const container = document.getElementById('messagesInner');
     const el = document.createElement('div');
     el.className = 'msg-system';
     el.textContent = text;
