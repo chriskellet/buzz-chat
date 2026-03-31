@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Buzz · Instant Chat</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
@@ -527,6 +527,8 @@
   }
 
   // ── Gun.js ──
+  let presenceTimer, peerCountTimer;
+
   function initGun() {
     gun = Gun({
       peers: [
@@ -539,24 +541,25 @@
     roomRef = gun.get('buzz-chat-v1').get(roomCode);
 
     // Announce presence
-    roomRef.get('presence').get(myId).put({
-      name: myName,
-      ts: Date.now(),
-    });
-
-    // Heartbeat presence every 15s
-    setInterval(() => {
+    const announcePresence = () => {
       roomRef.get('presence').get(myId).put({
         name: myName,
         ts: Date.now(),
       });
-    }, 15000);
+    };
+    announcePresence();
 
-    // Track peers
-    roomRef.get('presence').map().on((data, peerId) => {
-      if (!data || !data.ts) return;
-      updatePeerCount();
+    // Heartbeat every 30s (longer interval to reduce traffic)
+    presenceTimer = setInterval(announcePresence, 30000);
+
+    // Clean up on page close
+    window.addEventListener('beforeunload', () => {
+      roomRef.get('presence').get(myId).put(null);
     });
+
+    // Poll peer count on a fixed interval instead of reacting to every .on() event
+    updatePeerCount();
+    peerCountTimer = setInterval(updatePeerCount, 10000);
 
     // Post join message
     addSystemMessage(`You joined as ${myName}`);
@@ -573,15 +576,18 @@
       renderMessage(data, initialLoad);
     });
 
-    // Listen for typing
+    // Listen for typing — ignore stale entries
     roomRef.get('typing').map().on((data, peerId) => {
       if (!data || peerId === myId) return;
-      if (data.active && Date.now() - data.ts < 5000) {
+      if (data.active && Date.now() - data.ts < 4000) {
         showTyping(data.name || 'Someone');
-      } else {
-        hideTyping();
       }
     });
+    // Clear typing indicator on a timer instead of on every stale event
+    setInterval(() => {
+      const el = document.getElementById('typingIndicator');
+      if (el.classList.contains('visible')) hideTyping();
+    }, 5000);
 
     // Key bindings
     document.getElementById('msgInput').addEventListener('keydown', (e) => {
@@ -591,32 +597,46 @@
       }
     });
 
-    // Typing indicator broadcast
+    // Typing indicator broadcast — debounce to one put per 2s
+    let lastTypingPut = 0;
     document.getElementById('msgInput').addEventListener('input', () => {
-      roomRef.get('typing').get(myId).put({
-        name: myName,
-        active: true,
-        ts: Date.now(),
-      });
+      const now = Date.now();
+      if (now - lastTypingPut > 2000) {
+        lastTypingPut = now;
+        roomRef.get('typing').get(myId).put({
+          name: myName,
+          active: true,
+          ts: now,
+        });
+      }
       clearTimeout(typingTimeout);
       typingTimeout = setTimeout(() => {
         roomRef.get('typing').get(myId).put({ active: false, ts: Date.now() });
-      }, 2000);
+      }, 2500);
     });
   }
 
   // ── Presence ──
+  const peers = new Map();
+
   function updatePeerCount() {
     const now = Date.now();
-    let count = 0;
-    roomRef.get('presence').map().once((data) => {
-      if (data && data.ts && now - data.ts < 30000) count++;
+    roomRef.get('presence').map().once((data, peerId) => {
+      if (data && data.ts && now - data.ts < 60000) {
+        peers.set(peerId, data.ts);
+      } else {
+        peers.delete(peerId);
+      }
     });
-    // Small delay to let .once resolve
     setTimeout(() => {
+      // Prune stale entries
+      const cutoff = Date.now() - 60000;
+      for (const [id, ts] of peers) {
+        if (ts < cutoff) peers.delete(id);
+      }
       const el = document.getElementById('peerCount');
-      el.textContent = `${Math.max(1, count)} online`;
-    }, 200);
+      el.textContent = `${Math.max(1, peers.size)} online`;
+    }, 300);
   }
 
   // ── Messaging ──
@@ -631,16 +651,15 @@
     const ts = Date.now();
 
     // Show optimistic message immediately
-    const el = renderMessage({ text, author: myName, authorId: myId, ts }, false, true);
+    const msgData = { text, author: myName, authorId: myId, ts };
+    const el = renderMessage(msgData, false, true);
     pendingMsgs.set(msgId, el);
     seenIds.add(msgId);
 
-    roomRef.get('messages').get(msgId).put({
-      text,
-      author: myName,
-      authorId: myId,
-      ts,
-    });
+    // Auto-confirm after 3s if relay is slow/down
+    setTimeout(() => confirmMessage(msgId, msgData), 3000);
+
+    roomRef.get('messages').get(msgId).put(msgData);
 
     // Clear typing
     roomRef.get('typing').get(myId).put({ active: false, ts: Date.now() });
@@ -665,10 +684,14 @@
 
     const time = document.createElement('div');
     time.className = 'msg-time';
-    time.textContent = pending
-      ? '<span class="msg-status">Sending\u2026</span>'
-      : new Date(data.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    if (pending) time.innerHTML = time.textContent;
+    if (pending) {
+      const status = document.createElement('span');
+      status.className = 'msg-status';
+      status.textContent = 'Sending\u2026';
+      time.appendChild(status);
+    } else {
+      time.textContent = new Date(data.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
 
     msg.appendChild(author);
     msg.appendChild(bubble);
