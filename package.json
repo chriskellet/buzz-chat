@@ -1,0 +1,20 @@
+{
+  "name": "buzz-chat",
+  "version": "1.0.0",
+  "description": "A zero-config, peer-to-peer chat app that runs entirely on GitHub Pages. No server, no signup, no database — just share a room code and go.",
+  "main": "index.js",
+  "scripts": {
+    "test": "npx playwright test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:41949/git/chriskellet/buzz-chat"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "serve": "^14.2.6"
+  }
+}
