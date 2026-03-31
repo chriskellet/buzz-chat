@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <title>Buzz · Instant Chat</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
@@ -237,12 +237,17 @@
   .messages {
     flex: 1;
     overflow-y: auto;
+    scroll-behavior: smooth;
+    overscroll-behavior: contain;
+  }
+
+  .messages-inner {
+    min-height: 100%;
     padding: 1rem;
     display: flex;
     flex-direction: column;
+    justify-content: flex-end;
     gap: 0.25rem;
-    scroll-behavior: smooth;
-    overscroll-behavior: contain;
   }
 
   .msg {
@@ -326,6 +331,7 @@
 
   .chat-input-area {
     padding: 0.75rem 1rem;
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--border);
     background: var(--surface);
     display: flex;
@@ -340,7 +346,7 @@
     border-radius: 12px;
     padding: 0.7rem 1rem;
     color: var(--text);
-    font-size: 0.95rem;
+    font-size: 16px;
     font-family: var(--font);
     outline: none;
     transition: border-color 0.2s;
@@ -442,7 +448,7 @@
     </div>
   </div>
 
-  <div class="messages" id="messages"></div>
+  <div class="messages" id="messages"><div class="messages-inner" id="messagesInner"></div></div>
 
   <div class="typing-indicator" id="typingIndicator">
     <div class="typing-dots"><span></span><span></span><span></span></div>
@@ -628,7 +634,7 @@
   }
 
   function renderMessage(data) {
-    const container = document.getElementById('messages');
+    const container = document.getElementById('messagesInner');
     const isMine = data.authorId === myId;
 
     const msg = document.createElement('div');
@@ -652,14 +658,15 @@
     container.appendChild(msg);
 
     // Auto-scroll if near bottom
-    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+    const scroller = document.getElementById('messages');
+    const isNearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
     if (isNearBottom || isMine) {
-      container.scrollTop = container.scrollHeight;
+      scroller.scrollTop = scroller.scrollHeight;
     }
   }
 
   function addSystemMessage(text) {
-    const container = document.getElementById('messages');
+    const container = document.getElementById('messagesInner');
     const el = document.createElement('div');
     el.className = 'msg-system';
     el.textContent = text;
