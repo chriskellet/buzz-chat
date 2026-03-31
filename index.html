@@ -500,6 +500,9 @@
   var PAGE_SIZE = 50;
   var messageHistory = [];  // full sorted backlog
   var historyOffset = 0;    // how many from the end we've rendered
+  const pendingMsgs = new Map();
+  const peers = new Map();
+  const emojiOnlyRegex = /^(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F){1,8}$/u;
 
   // ── Cookie helpers ──
   function setCookie(name, value, days) {
@@ -723,8 +726,6 @@
   }
 
   // ── Presence ──
-  const peers = new Map();
-
   function updatePeerCount() {
     const staleMs = 180000; // 3 minutes
     const now = Date.now();
@@ -792,11 +793,7 @@
     if (start > 0) showLoadMoreButton();
   }
 
-  // ── Emoji detection ──
-  const emojiOnlyRegex = /^(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F){1,8}$/u;
-
   // ── Messaging ──
-  const pendingMsgs = new Map();
 
   function sendMessage() {
     const input = document.getElementById('msgInput');
