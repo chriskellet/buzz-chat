@@ -276,6 +276,13 @@
     line-height: 1.45;
     word-break: break-word;
   }
+  .msg-bubble a {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    word-break: break-all;
+  }
+  .msg.theirs .msg-bubble a { color: var(--accent); }
+  .msg.mine .msg-bubble a { color: inherit; }
 
   .msg.mine .msg-bubble {
     background: linear-gradient(135deg, var(--accent), var(--accent-2));
@@ -982,7 +989,7 @@
 
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
-    bubble.textContent = data.text;
+    bubble.innerHTML = linkify(data.text);
 
     // Enlarge emoji-only messages
     if (emojiOnlyRegex.test(data.text.trim())) {
@@ -1051,6 +1058,18 @@
   }
 
   // ── Utils ──
+  const urlRegex = /(https?:\/\/[^\s<>"')\]]+)/g;
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function linkify(text) {
+    return escapeHtml(text).replace(urlRegex, (url) => {
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+    });
+  }
+
   function copyLink() {
     const url = new URL(location.href);
     url.searchParams.set('room', roomCode);
