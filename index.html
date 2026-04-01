@@ -310,6 +310,31 @@
     border: 1px solid var(--border);
   }
 
+  .msg-bubble.emoji-only {
+    background: transparent !important;
+    border: none !important;
+    font-size: 2.5rem;
+    line-height: 1.2;
+    padding: 0.2rem 0.4rem;
+  }
+
+  .load-more {
+    align-self: center;
+    font-size: 0.75rem;
+    color: var(--accent);
+    background: var(--surface);
+    padding: 0.4rem 1rem;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-family: var(--font);
+    font-weight: 500;
+    transition: all 0.2s;
+    margin-bottom: 0.5rem;
+    flex-shrink: 0;
+  }
+  .load-more:hover { border-color: var(--accent); background: var(--accent-dim); }
+
   .typing-indicator {
     align-self: flex-start;
     padding: 0.5rem 0.8rem;
@@ -594,7 +619,31 @@
 
 <script>
   // ── State ──
-  let gun, roomRef, myName, myId, roomCode, seenIds = new Set(), typingTimeout;
+  var gun, roomRef, myName, myId, roomCode, seenIds = new Set(), typingTimeout;
+  var PAGE_SIZE = 50;
+  var messageHistory = [];  // full sorted backlog
+  var historyOffset = 0;    // how many from the end we've rendered
+  const pendingMsgs = new Map();
+  const peers = new Map();
+  const emojiOnlyRegex = /^(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F){1,8}$/u;
+
+  // ── Cookie helpers ──
+  function setCookie(name, value, days) {
+    const d = new Date();
+    d.setTime(d.getTime() + days * 86400000);
+    document.cookie = `${name}=${encodeURIComponent(value)};expires=${d.toUTCString()};path=/;SameSite=Lax`;
+  }
+  function getCookie(name) {
+    const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  // ── Restore returning user ──
+  const savedId = getCookie('buzz_user_id');
+  const savedName = getCookie('buzz_user_name');
+  if (savedName) {
+    document.getElementById('nameInput').value = savedName;
+  }
 
   // ── Init ──
   const params = new URLSearchParams(location.search);
@@ -602,8 +651,14 @@
     document.getElementById('roomInput').value = params.get('room');
   }
 
-  // Auto-focus
-  document.getElementById('nameInput').focus();
+  // Auto-rejoin if returning user has a room in URL
+  // Deferred to ensure all script declarations are fully loaded
+  // before Gun initializes and fires synchronous callbacks
+  if (savedId && savedName && params.get('room')) {
+    setTimeout(() => joinRoom(), 0);
+  } else {
+    document.getElementById('nameInput').focus();
+  }
 
   // ── Room helpers ──
   function generateRoom() {
@@ -626,7 +681,10 @@
       roomCode = document.getElementById('roomInput').value.trim();
     }
 
-    myId = crypto.randomUUID();
+    // Reuse saved identity or create new one
+    myId = savedId || crypto.randomUUID();
+    setCookie('buzz_user_id', myId, 365);
+    setCookie('buzz_user_name', myName, 365);
 
     // Update URL without reload
     const url = new URL(location.href);
@@ -658,7 +716,7 @@
         'https://relay.peer.ooo/gun',
         'https://gun.o8.is/gun',
       ],
-      localStorage: false,
+      localStorage: true,
     });
 
     roomRef = gun.get('buzz-chat-v1').get(roomCode);
@@ -696,9 +754,34 @@
     // Post join message
     addSystemMessage(`You joined as ${myName}`);
 
-    // Listen for messages — auto-scroll during initial load
+    // Listen for messages — buffer during initial load, debounce then sort & paginate
     let initialLoad = true;
-    setTimeout(() => { initialLoad = false; }, 2000);
+    const initialBuffer = [];
+    let flushTimer = null;
+    const DEBOUNCE_MS = 400;  // flush 400ms after last message arrives
+    const MAX_WAIT_MS = 2000; // but never wait longer than 2s total
+    const loadStart = Date.now();
+
+    function flushInitialBuffer() {
+      if (!initialLoad) return;
+      initialLoad = false;
+      clearTimeout(flushTimer);
+
+      initialBuffer.sort((a, b) => a.ts - b.ts);
+      messageHistory = initialBuffer;
+
+      const start = Math.max(0, messageHistory.length - PAGE_SIZE);
+      historyOffset = messageHistory.length - start;
+
+      if (start > 0) showLoadMoreButton();
+
+      for (let i = start; i < messageHistory.length; i++) {
+        renderMessage(messageHistory[i], true);
+      }
+    }
+
+    // Hard deadline — never wait longer than MAX_WAIT_MS
+    setTimeout(flushInitialBuffer, MAX_WAIT_MS);
 
     roomRef.get('messages').map().on(async (data, id) => {
       if (!data) return;
@@ -716,8 +799,31 @@
       } else {
         return;
       }
+      const decrypted = { ...data, text };
 
-      renderMessage({ ...data, text }, initialLoad);
+      if (initialLoad) {
+        initialBuffer.push(decrypted);
+        // Debounce: flush shortly after messages stop arriving
+        clearTimeout(flushTimer);
+        flushTimer = setTimeout(flushInitialBuffer, DEBOUNCE_MS);
+      } else {
+        // Live message — also add to history for consistency
+        messageHistory.push(decrypted);
+        historyOffset++;
+        renderMessage(decrypted, false);
+      }
+    });
+
+    // Scroll-to-top detection for loading older messages (debounced)
+    let scrollLoadTimer;
+    document.getElementById('messages').addEventListener('scroll', () => {
+      clearTimeout(scrollLoadTimer);
+      scrollLoadTimer = setTimeout(() => {
+        const scroller = document.getElementById('messages');
+        if (scroller.scrollTop < 50 && historyOffset < messageHistory.length) {
+          loadOlderMessages();
+        }
+      }, 200);
     });
 
     // Poll for typing every 2s instead of using map().on() which
@@ -762,8 +868,6 @@
   }
 
   // ── Presence ──
-  const peers = new Map();
-
   function updatePeerCount() {
     const staleMs = 180000; // 3 minutes
     const now = Date.now();
@@ -784,8 +888,54 @@
     }, 300);
   }
 
+  // ── Pagination ──
+  function showLoadMoreButton() {
+    const container = document.getElementById('messagesInner');
+    if (container.querySelector('.load-more')) return;
+    const btn = document.createElement('button');
+    btn.className = 'load-more';
+    const remaining = messageHistory.length - historyOffset;
+    btn.textContent = `Load ${Math.min(PAGE_SIZE, remaining)} older messages`;
+    btn.onclick = () => loadOlderMessages();
+    container.prepend(btn);
+  }
+
+  function loadOlderMessages() {
+    const container = document.getElementById('messagesInner');
+    const scroller = document.getElementById('messages');
+
+    // Remove existing button
+    const btn = container.querySelector('.load-more');
+    if (btn) btn.remove();
+
+    const end = messageHistory.length - historyOffset;
+    if (end <= 0) return;
+    const start = Math.max(0, end - PAGE_SIZE);
+
+    // Preserve scroll position
+    const prevHeight = scroller.scrollHeight;
+
+    // Render older batch at top (after system message if present)
+    const firstMsg = container.querySelector('.msg');
+    for (let i = start; i < end; i++) {
+      const el = renderMessageElement(messageHistory[i]);
+      if (firstMsg) {
+        container.insertBefore(el, firstMsg);
+      } else {
+        container.appendChild(el);
+      }
+    }
+
+    historyOffset += (end - start);
+
+    // Restore scroll so content doesn't jump
+    scroller.scrollTop = scroller.scrollHeight - prevHeight;
+
+    // Show button if more remain
+    if (start > 0) showLoadMoreButton();
+  }
+
   // ── Messaging ──
-  const pendingMsgs = new Map();
 
   async function sendMessage() {
     const input = document.getElementById('msgInput');
@@ -820,8 +970,7 @@
     input.focus();
   }
 
-  function renderMessage(data, forceScroll, pending) {
-    const container = document.getElementById('messagesInner');
+  function renderMessageElement(data, pending) {
     const isMine = data.authorId === myId;
 
     const msg = document.createElement('div');
@@ -834,6 +983,11 @@
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
     bubble.textContent = data.text;
+
+    // Enlarge emoji-only messages
+    if (emojiOnlyRegex.test(data.text.trim())) {
+      bubble.classList.add('emoji-only');
+    }
 
     const time = document.createElement('div');
     time.className = 'msg-time';
@@ -849,10 +1003,18 @@
     msg.appendChild(author);
     msg.appendChild(bubble);
     msg.appendChild(time);
+
+    return msg;
+  }
+
+  function renderMessage(data, forceScroll, pending) {
+    const container = document.getElementById('messagesInner');
+    const msg = renderMessageElement(data, pending);
     container.appendChild(msg);
 
     // Auto-scroll if near bottom or during initial load
     const scroller = document.getElementById('messages');
+    const isMine = data.authorId === myId;
     const isNearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
     if (isNearBottom || isMine || forceScroll) {
       scroller.scrollTop = scroller.scrollHeight;
