@@ -430,6 +430,87 @@
   .messages::-webkit-scrollbar-track { background: transparent; }
   .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
+  /* ── Security link ── */
+  .security-link {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    font-family: var(--font);
+    cursor: pointer;
+    padding: 0.4rem 0.8rem;
+    border-radius: var(--radius-sm);
+    transition: color 0.2s;
+  }
+  .security-link:hover { color: var(--text); }
+
+  /* ── Modal ── */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: oklch(0 0 0 / 0.6);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+  }
+  .modal-overlay.visible { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    max-width: 520px;
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    animation: fadeIn 0.2s ease;
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.2rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal-header h2 {
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  .modal-body {
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.2rem;
+  }
+
+  .info-block h3 {
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+    color: var(--accent);
+  }
+  .info-block p, .info-block li {
+    font-size: 0.85rem;
+    line-height: 1.55;
+    color: var(--text-dim);
+  }
+  .info-block a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .info-block a:hover { text-decoration: underline; }
+  .info-block ul {
+    padding-left: 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .info-block strong { color: var(--text); }
+
   /* ── Mobile ── */
   @media (max-width: 500px) {
     .msg { max-width: 85%; }
@@ -457,6 +538,47 @@
 
     <button class="btn-ghost" onclick="generateRoom()">Create random room</button>
   </div>
+  <button class="security-link" onclick="document.getElementById('securityModal').classList.add('visible')">🔒 How encryption works</button>
+</div>
+
+<!-- Security info modal -->
+<div class="modal-overlay" id="securityModal" onclick="if(event.target===this)this.classList.remove('visible')">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>🔒 How encryption works</h2>
+      <button class="icon-btn" onclick="document.getElementById('securityModal').classList.remove('visible')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="info-block">
+        <h3>End-to-end encrypted</h3>
+        <p>Every message is encrypted before it leaves your device using <strong>AES-GCM</strong> via the <a href="https://gun.eco/docs/SEA" target="_blank">Gun SEA</a> library. Relay servers only ever see ciphertext — they cannot read your messages.</p>
+      </div>
+      <div class="info-block">
+        <h3>Room code = encryption key</h3>
+        <p>Your room code is used to derive a cryptographic key using <strong>PBKDF2</strong>. Anyone with the same room code can derive the same key and read messages. Think of the room code as a shared password.</p>
+      </div>
+      <div class="info-block">
+        <h3>What's protected</h3>
+        <ul>
+          <li><strong>Message content</strong> is encrypted — relay servers and anyone without the room code cannot read it</li>
+          <li><strong>Metadata</strong> (display name, timestamp) is not encrypted — this is needed for the UI to work without decrypting every message</li>
+        </ul>
+      </div>
+      <div class="info-block">
+        <h3>Limitations</h3>
+        <ul>
+          <li>Security depends on keeping your room code secret — share it only with people you trust</li>
+          <li>Short or guessable room codes can be brute-forced — use the random room generator for best security</li>
+          <li>No identity verification — you trust that the person with the room code is who they say they are</li>
+          <li>No forward secrecy — if the room code is later compromised, past messages could be decrypted</li>
+        </ul>
+      </div>
+      <div class="info-block">
+        <h3>Open source</h3>
+        <p>Buzz is a single HTML file with no backend. You can <a href="https://github.com/chriskellet/buzz-chat" target="_blank">read the entire source</a> to verify these claims.</p>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Chat -->
@@ -470,6 +592,7 @@
       </div>
     </div>
     <div class="chat-header-right">
+      <button class="icon-btn" onclick="document.getElementById('securityModal').classList.add('visible')" title="Encryption info">🔒</button>
       <button class="icon-btn" onclick="copyLink()" title="Copy invite link">🔗</button>
       <button class="icon-btn" onclick="leaveRoom()" title="Leave room">✕</button>
     </div>
@@ -585,9 +708,9 @@
   }
 
   // ── Gun.js ──
-  let presenceTimer;
+  let presenceTimer, roomKey;
 
-  function initGun() {
+  async function initGun() {
     gun = Gun({
       peers: [
         'https://relay.peer.ooo/gun',
@@ -597,6 +720,11 @@
     });
 
     roomRef = gun.get('buzz-chat-v1').get(roomCode);
+
+    // Derive encryption key from room code
+    // SEA.work with a fixed salt produces a deterministic key —
+    // anyone with the room code can derive the same key
+    roomKey = await SEA.work(roomCode, 'buzz-chat-room-salt');
 
     // Announce presence + update peer count together
     const heartbeat = () => {
@@ -655,22 +783,34 @@
     // Hard deadline — never wait longer than MAX_WAIT_MS
     setTimeout(flushInitialBuffer, MAX_WAIT_MS);
 
-    roomRef.get('messages').map().on((data, id) => {
-      if (!data || !data.text) return;
+    roomRef.get('messages').map().on(async (data, id) => {
+      if (!data) return;
       if (pendingMsgs.has(id)) { confirmMessage(id, data); return; }
       if (seenIds.has(id)) return;
       seenIds.add(id);
 
+      // Decrypt message — supports both encrypted (enc) and legacy plaintext (text)
+      let text;
+      if (data.enc) {
+        text = await SEA.decrypt(data.enc, roomKey);
+        if (!text) return; // decryption failed — wrong room key
+      } else if (data.text) {
+        text = data.text; // legacy unencrypted message
+      } else {
+        return;
+      }
+      const decrypted = { ...data, text };
+
       if (initialLoad) {
-        initialBuffer.push(data);
+        initialBuffer.push(decrypted);
         // Debounce: flush shortly after messages stop arriving
         clearTimeout(flushTimer);
         flushTimer = setTimeout(flushInitialBuffer, DEBOUNCE_MS);
       } else {
         // Live message — also add to history for consistency
-        messageHistory.push(data);
+        messageHistory.push(decrypted);
         historyOffset++;
-        renderMessage(data, false);
+        renderMessage(decrypted, false);
       }
     });
 
@@ -797,7 +937,7 @@
 
   // ── Messaging ──
 
-  function sendMessage() {
+  async function sendMessage() {
     const input = document.getElementById('msgInput');
     const text = input.value.trim();
     if (!text) return;
@@ -814,7 +954,15 @@
     // Auto-confirm after 3s if relay is slow/down
     setTimeout(() => confirmMessage(msgId, msgData), 3000);
 
-    roomRef.get('messages').get(msgId).put(msgData);
+    // Encrypt before sending — only the text is encrypted,
+    // metadata (author, ts) stays readable for display
+    const encrypted = await SEA.encrypt(text, roomKey);
+    roomRef.get('messages').get(msgId).put({
+      enc: encrypted,
+      author: myName,
+      authorId: myId,
+      ts,
+    });
 
     // Clear typing
     roomRef.get('typing').get(myId).put({ active: false, ts: Date.now() });

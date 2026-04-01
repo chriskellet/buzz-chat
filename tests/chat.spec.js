@@ -94,11 +94,12 @@ test('messages are written to Gun localStorage', async ({ page }) => {
   }, { timeout: 10000 });
   expect(hasData).toBeTruthy();
 
-  // Verify the message text exists somewhere in localStorage
+  // Verify a message entry exists in localStorage
+  // (text is encrypted, so we check for the author name which is stored as metadata)
   const hasMessage = await page.evaluate(() => {
     for (const key of Object.keys(localStorage)) {
       const val = localStorage.getItem(key);
-      if (val && val.includes('Persistence test')) return true;
+      if (val && val.includes('PersistUser')) return true;
     }
     return false;
   });
