@@ -156,6 +156,51 @@
     background: var(--border);
   }
 
+  .recent-rooms { margin-top: 0.25rem; }
+  .recent-rooms-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin-bottom: 0.5rem;
+  }
+  .recent-rooms-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .recent-room-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.75rem;
+    cursor: pointer;
+    transition: border-color 0.2s;
+    font-family: var(--font);
+    text-align: left;
+    color: var(--text);
+    width: 100%;
+  }
+  .recent-room-item:hover { border-color: var(--accent); }
+  .recent-room-name {
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .recent-room-time {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
   /* ── Chat ── */
   #chat {
     display: none;
@@ -554,6 +599,7 @@
 
     <button class="btn-ghost" onclick="generateRoom()">Create random room</button>
   </div>
+  <div class="recent-rooms" id="recentRooms" style="display:none; max-width:400px; width:100%;"></div>
   <button class="security-link" onclick="document.getElementById('securityModal').classList.add('visible')">🔒 How encryption works</button>
 </div>
 
@@ -654,6 +700,78 @@
     return match ? decodeURIComponent(match[1]) : null;
   }
 
+  // ── Recent rooms (localStorage) ──
+  const RECENT_ROOMS_KEY = 'buzz_recent_rooms';
+  const RECENT_ROOMS_MAX = 5;
+  const RECENT_ROOMS_MAX_AGE = 7 * 86400000; // 7 days
+
+  function getRecentRooms() {
+    try {
+      const raw = localStorage.getItem(RECENT_ROOMS_KEY);
+      if (!raw) return [];
+      const rooms = JSON.parse(raw);
+      const cutoff = Date.now() - RECENT_ROOMS_MAX_AGE;
+      return rooms.filter(r => r.ts >= cutoff);
+    } catch { return []; }
+  }
+
+  function saveRecentRoom(code) {
+    const rooms = getRecentRooms().filter(r => r.code !== code);
+    rooms.unshift({ code, ts: Date.now() });
+    localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(rooms.slice(0, RECENT_ROOMS_MAX)));
+  }
+
+  function renderRecentRooms() {
+    const container = document.getElementById('recentRooms');
+    const rooms = getRecentRooms();
+    if (rooms.length === 0) { container.style.display = 'none'; return; }
+
+    container.style.display = '';
+    container.innerHTML = '';
+
+    const label = document.createElement('div');
+    label.className = 'recent-rooms-label';
+    label.textContent = 'Recent rooms';
+    container.appendChild(label);
+
+    const list = document.createElement('div');
+    list.className = 'recent-rooms-list';
+
+    rooms.forEach(r => {
+      const item = document.createElement('button');
+      item.className = 'recent-room-item';
+
+      const name = document.createElement('span');
+      name.className = 'recent-room-name';
+      name.textContent = '# ' + r.code;
+
+      const time = document.createElement('span');
+      time.className = 'recent-room-time';
+      time.textContent = formatRelativeDate(r.ts);
+
+      item.appendChild(name);
+      item.appendChild(time);
+      item.onclick = () => {
+        document.getElementById('roomInput').value = r.code;
+        joinRoom();
+      };
+      list.appendChild(item);
+    });
+
+    container.appendChild(list);
+  }
+
+  function formatRelativeDate(ts) {
+    const diff = Date.now() - ts;
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+
   // ── Restore returning user ──
   const savedId = getCookie('buzz_user_id');
   const savedName = getCookie('buzz_user_name');
@@ -673,6 +791,7 @@
   if (savedId && savedName && params.get('room')) {
     setTimeout(() => joinRoom(), 0);
   } else {
+    renderRecentRooms();
     document.getElementById('nameInput').focus();
   }
 
@@ -702,7 +821,8 @@
     setCookie('buzz_user_id', myId, 365);
     setCookie('buzz_user_name', myName, 365);
 
-    // Update URL without reload
+    // Save to recent rooms and update URL
+    saveRecentRoom(roomCode);
     const url = new URL(location.href);
     url.searchParams.set('room', roomCode);
     history.replaceState(null, '', url);
