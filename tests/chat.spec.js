@@ -87,23 +87,16 @@ test('messages are written to Gun localStorage', async ({ page }) => {
 
   await sendMessage(page, 'Persistence test');
 
-  // Verify Gun wrote to localStorage
-  const hasData = await page.waitForFunction(() => {
-    const keys = Object.keys(localStorage);
-    return keys.length > 0;
-  }, { timeout: 10000 });
-  expect(hasData).toBeTruthy();
-
-  // Verify a message entry exists in localStorage
-  // (text is encrypted, so we check for the author name which is stored as metadata)
-  const hasMessage = await page.evaluate(() => {
+  // Verify Gun wrote the message metadata to localStorage.
+  // Gun flushes asynchronously after put(), so wait rather than one-shot.
+  // (Text is encrypted, so we check for the author name which is stored as metadata.)
+  await page.waitForFunction(() => {
     for (const key of Object.keys(localStorage)) {
       const val = localStorage.getItem(key);
       if (val && val.includes('PersistUser')) return true;
     }
     return false;
-  });
-  expect(hasMessage).toBe(true);
+  }, { timeout: 10000 });
 });
 
 // ─────────────────────────────────────────────

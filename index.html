@@ -7,6 +7,9 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <style>
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
@@ -25,11 +28,6 @@
     --radius-sm: 8px;
     --font: 'Inter', system-ui, -apple-system, sans-serif;
     --mono: 'JetBrains Mono', 'Fira Code', monospace;
-  }
-
-  @font-face {
-    font-family: 'Inter';
-    src: url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
   }
 
   html { height: 100%; height: 100dvh; }
@@ -683,17 +681,37 @@
   // ── State ──
   var gun, roomRef, myName, myId, roomCode, seenIds = new Set(), typingTimeout;
   var PAGE_SIZE = 50;
+  var SEEN_IDS_MAX = 2000;
+
+  // Cap seenIds so a long-running session doesn't grow unbounded.
+  // Set iterates insertion order, so deleting from the head is rough LRU.
+  function markSeen(id) {
+    seenIds.add(id);
+    if (seenIds.size > SEEN_IDS_MAX) {
+      const it = seenIds.values();
+      for (let i = 0; i < 500; i++) seenIds.delete(it.next().value);
+    }
+  }
+
   var messageHistory = [];  // full sorted backlog
   var historyOffset = 0;    // how many from the end we've rendered
   const pendingMsgs = new Map();
   const peers = new Map();
-  const emojiOnlyRegex = /^(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F){1,8}$/u;
+  // Prefer the v-flag regex with RGI_Emoji (matches ZWJ sequences, modifiers,
+  // keycaps, flags). Fall back to the narrower u-flag pattern on older engines.
+  let emojiOnlyRegex;
+  try {
+    emojiOnlyRegex = new RegExp('^(?:\\p{RGI_Emoji})(?:\\s*\\p{RGI_Emoji}){0,7}$', 'v');
+  } catch (_) {
+    emojiOnlyRegex = /^(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F){1,8}$/u;
+  }
 
   // ── Cookie helpers ──
   function setCookie(name, value, days) {
     const d = new Date();
     d.setTime(d.getTime() + days * 86400000);
-    document.cookie = `${name}=${encodeURIComponent(value)};expires=${d.toUTCString()};path=/;SameSite=Lax`;
+    const secure = location.protocol === 'https:' ? ';Secure' : '';
+    document.cookie = `${name}=${encodeURIComponent(value)};expires=${d.toUTCString()};path=/;SameSite=Lax${secure}`;
   }
   function getCookie(name) {
     const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
@@ -807,13 +825,17 @@
     document.getElementById('roomInput').value = `${pick()}-${pick()}-${Math.floor(Math.random() * 100)}`;
   }
 
+  function normalizeRoomCode(s) {
+    return s.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+  }
+
   function joinRoom() {
     myName = document.getElementById('nameInput').value.trim() || `User-${Math.random().toString(36).slice(2,6)}`;
-    roomCode = document.getElementById('roomInput').value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+    roomCode = normalizeRoomCode(document.getElementById('roomInput').value);
 
     if (!roomCode) {
       generateRoom();
-      roomCode = document.getElementById('roomInput').value.trim();
+      roomCode = normalizeRoomCode(document.getElementById('roomInput').value);
     }
 
     // Reuse saved identity or create new one
@@ -840,11 +862,26 @@
     if (roomRef) {
       roomRef.get('presence').get(myId).put(null);
     }
+    if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
+    if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
+    if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
     location.href = location.pathname;
   }
 
   // ── Gun.js ──
-  let presenceTimer, roomKey;
+  let presenceTimer, typingTimer, roomKey;
+  const typingPeers = new Map();
+
+  function updateTypingUI() {
+    const now = Date.now();
+    let active = null;
+    for (const [id, data] of typingPeers) {
+      if (id === myId) continue;
+      if (data && data.active && now - data.ts < 4000) { active = data; break; }
+    }
+    if (active) showTyping(active.name || 'Someone');
+    else hideTyping();
+  }
 
   async function initGun() {
     gun = Gun({
@@ -903,8 +940,15 @@
       initialLoad = false;
       clearTimeout(flushTimer);
 
-      initialBuffer.sort((a, b) => a.ts - b.ts);
-      messageHistory = initialBuffer;
+      // Preserve optimistic sends that were pushed to messageHistory
+      // during the initial-load window; merge with the buffered backlog.
+      const preFlush = messageHistory;
+      messageHistory = [...initialBuffer, ...preFlush].sort((a, b) => a.ts - b.ts);
+
+      // Reset the rendered window so everything renders in chronological
+      // order (keeps the "You joined" system message — different class).
+      const container = document.getElementById('messagesInner');
+      container.querySelectorAll('.msg, .load-more').forEach(el => el.remove());
 
       const start = Math.max(0, messageHistory.length - PAGE_SIZE);
       historyOffset = messageHistory.length - start;
@@ -923,7 +967,7 @@
       if (!data) return;
       if (pendingMsgs.has(id)) { confirmMessage(id, data); return; }
       if (seenIds.has(id)) return;
-      seenIds.add(id);
+      markSeen(id);
 
       // Decrypt message — supports both encrypted (enc) and legacy plaintext (text)
       let text;
@@ -943,11 +987,7 @@
         clearTimeout(flushTimer);
         flushTimer = setTimeout(flushInitialBuffer, DEBOUNCE_MS);
       } else {
-        // Live message — also add to history for consistency
-        const prev = messageHistory.length > 0 ? messageHistory[messageHistory.length - 1] : null;
-        messageHistory.push(decrypted);
-        historyOffset++;
-        renderMessage(decrypted, false, false, prev);
+        insertLiveMessage(decrypted);
       }
     });
 
@@ -964,17 +1004,16 @@
     });
 
     // Poll for typing every 2s instead of using map().on() which
-    // generates continuous relay sync traffic for every stale entry
-    setInterval(() => {
-      const now = Date.now();
-      let someoneTyping = false;
+    // generates continuous relay sync traffic for every stale entry.
+    // Maintain a persistent map so an async once() callback can't race
+    // against a hide() timer running on a fixed delay.
+    typingTimer = setInterval(() => {
       roomRef.get('typing').map().once((data, peerId) => {
-        if (data && peerId !== myId && data.active && now - data.ts < 4000) {
-          showTyping(data.name || 'Someone');
-          someoneTyping = true;
-        }
+        if (!data || peerId === myId) return;
+        typingPeers.set(peerId, data);
+        updateTypingUI();
       });
-      setTimeout(() => { if (!someoneTyping) hideTyping(); }, 200);
+      updateTypingUI();
     }, 2000);
 
     // Key bindings
@@ -1099,7 +1138,9 @@
     const prev = messageHistory.length > 0 ? messageHistory[messageHistory.length - 1] : null;
     const el = renderMessage(msgData, false, true, prev);
     pendingMsgs.set(msgId, el);
-    seenIds.add(msgId);
+    markSeen(msgId);
+    messageHistory.push(msgData);
+    historyOffset++;
 
     // Auto-confirm after 3s if relay is slow/down
     setTimeout(() => confirmMessage(msgId, msgData), 3000);
@@ -1129,6 +1170,62 @@
     const sameAuthor = data.authorId === prev.authorId;
     const sameTime = sameAuthor && formatTime(data.ts) === formatTime(prev.ts);
     return { sameAuthor, sameTime };
+  }
+
+  // Binary search: index at which a message with this ts should be inserted
+  // to keep messageHistory sorted ascending by ts.
+  function findInsertIndex(ts) {
+    let lo = 0, hi = messageHistory.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (messageHistory[mid].ts <= ts) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  // Insert a message arriving after initial load. If its timestamp places it
+  // inside the currently-rendered window we render it at the right DOM position;
+  // otherwise it stays in the paginated-away portion until "Load more".
+  function insertLiveMessage(data) {
+    const insertIdx = findInsertIndex(data.ts);
+    const firstRendered = messageHistory.length - historyOffset;
+    messageHistory.splice(insertIdx, 0, data);
+
+    if (insertIdx < firstRendered) {
+      const btn = document.querySelector('.load-more');
+      if (btn) {
+        const remaining = messageHistory.length - historyOffset;
+        btn.textContent = `Load ${Math.min(PAGE_SIZE, remaining)} older messages`;
+      }
+      return;
+    }
+
+    historyOffset++;
+    const prev = insertIdx > 0 ? messageHistory[insertIdx - 1] : null;
+
+    if (insertIdx === messageHistory.length - 1) {
+      renderMessage(data, false, false, prev);
+      return;
+    }
+
+    const container = document.getElementById('messagesInner');
+    const msgs = container.querySelectorAll('.msg');
+    const relIdx = insertIdx - firstRendered;
+    const beforeEl = msgs[relIdx];
+    const el = renderMessageElement(data, false, prev);
+    if (beforeEl) container.insertBefore(el, beforeEl);
+    else container.appendChild(el);
+
+    // Re-compute grouping on the message now immediately after the new one
+    const nextData = messageHistory[insertIdx + 1];
+    if (nextData && beforeEl) {
+      const { sameAuthor, sameTime } = getGrouping(nextData, data);
+      beforeEl.classList.toggle('grouped', sameAuthor);
+      beforeEl.classList.toggle('group-start', !sameAuthor);
+      const timeEl = beforeEl.querySelector('.msg-time');
+      if (timeEl) timeEl.classList.toggle('hidden-time', sameTime);
+    }
   }
 
   function renderMessageElement(data, pending, prev) {
@@ -1249,15 +1346,18 @@
     if (e.key === 'Enter') document.getElementById('roomInput').focus();
   });
 
-  // iOS keyboard viewport fix
+  // iOS keyboard viewport fix — only scroll into view when the viewport
+  // actually shrinks (keyboard opening), not on every resize event.
   if (window.visualViewport) {
+    let lastVH = window.visualViewport.height;
     window.visualViewport.addEventListener('resize', () => {
-      document.documentElement.style.height = window.visualViewport.height + 'px';
-      // Scroll input into view when keyboard opens
+      const vh = window.visualViewport.height;
+      document.documentElement.style.height = vh + 'px';
       const active = document.activeElement;
-      if (active && active.tagName === 'INPUT') {
+      if (vh < lastVH - 50 && active && active.tagName === 'INPUT') {
         requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest' }));
       }
+      lastVH = vh;
     });
   }
 </script>

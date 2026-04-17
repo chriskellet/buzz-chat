@@ -8,6 +8,7 @@ module.exports = defineConfig({
   use: {
     baseURL: 'http://localhost:3999',
     headless: true,
+    ignoreHTTPSErrors: true,
   },
   webServer: {
     command: 'npx serve -l 3999 --no-clipboard .',
